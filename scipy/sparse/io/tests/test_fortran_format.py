@@ -18,7 +18,7 @@ class TestFormat(TestCase):
         self._test_equal("(I4)", IntFormat(4))
 
     def test_simple_repeated_int(self):
-        self._test_equal("(3I4)", IntFormat(4, 3))
+        self._test_equal("(3I4)", IntFormat(4, repeat=3))
 
     def test_simple_exp(self):
         self._test_equal("(E4.3)", ExpFormat(4, 3))

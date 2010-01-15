@@ -14,7 +14,8 @@ from scipy.sparse \
         coo_matrix, csc_matrix, rand
 
 from scipy.sparse.io \
-    import read_hb, write_hb
+    import \
+        HBFile, read_hb#, write_hb
 
 SIMPLE = """\
 No Title                                                                |No Key 
@@ -52,15 +53,15 @@ class TestHBReader(TestCase):
         m = read_hb(StringIO(SIMPLE))
         assert_csc_almost_equal(m, SIMPLE_MATRIX)
 
-class TestRBRoundtrip(TestCase):
-    def test_simple(self):
-        rm = rand(1000, 1000, 0.05).tocsc()
-        fd, filename = tempfile.mkstemp(suffix="rb")
-        try:
-            write_hb(filename, rm)
-            m = read_hb(filename)
-        finally:
-            os.close(fd)
-            os.remove(filename)
-
-        assert_csc_almost_equal(m, rm)
+#class TestRBRoundtrip(TestCase):
+#    def test_simple(self):
+#        rm = rand(1000, 1000, 0.05).tocsc()
+#        fd, filename = tempfile.mkstemp(suffix="rb")
+#        try:
+#            write_hb(filename, rm)
+#            m = read_hb(filename)
+#        finally:
+#            os.close(fd)
+#            os.remove(filename)
+#
+#        assert_csc_almost_equal(m, rm)

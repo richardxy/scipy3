@@ -8,14 +8,14 @@ Implementation of Harwell-Boeing read/write.
 
 # TODO:
 #   - support for more value types (other float format at least)
-#   - API to get/write header (title, key, etc...) ?
 #   - API for format specifier in hb_write ?
 #   - Add more support (symmetric/complex matrices, non-assembled matrices ?)
 
-# XXX: read_hb is reasonably efficient (>= 85 % is in numpy.fromstring), being
-# faster would require compiled code. Although not a terribly exciting task,
-# having fast, reusable facilities to read fortran-formatted files would be
-# useful outside this module.
+# XXX: reading is reasonably efficient (>= 85 % is in numpy.fromstring), but
+# takes a lot of memory. Being faster would require compiled code.
+# write_hb is not efficient. Although not a terribly exciting task,
+# having reusable facilities to efficiently read/write fortran-formatted files
+# would be useful outside this module.
 import numpy as np
 
 from scipy.sparse \
@@ -30,35 +30,156 @@ __all__ = ["MalformedHeader", "read_hb", "write_hb"]
 class MalformedHeader(Exception):
     pass
 
-class HarwellBoeingHeader(object):
+def _nbytes_full(fmt, nlines):
+    """Return the number of bytes to read to get every full lines for the
+    given parsed fortran format."""
+    return (fmt.repeat * fmt.width + 1) * (nlines - 1)
+
+class HBHeader(object):
+    @classmethod
+    def from_data(cls, title, key, pointer, indices, values, fmt=None):
+        if fmt is None:
+            pointer_max = np.max(pointer)
+        else:
+            raise NotImplementedError("fmt argument not supported yet.")
+
     @classmethod
     def from_file(cls, fid):
-        return _read_header(fid)
+        # First line
+        line = fid.readline()
+        if not len(line) > 72:
+            raise ValueError("Expected at least 72 characters for first line, "
+                             "got: \n%s" % line)
+        title = line[:72]
+        key = line[72:]
 
-    def __init__(self, title,
-                 pointer_nlines, pointer_nitems, pointer_width,
-                 indices_nlines, indices_nitems, indices_width,
-                 values_nlines, values_nitems, values_width,
-                 n_rows, n_cols, n_nzeros,
-                 key=None):
+        # Second line
+        line = fid.readline()
+        if not len(line.rstrip()) >= 56:
+            raise ValueError("Expected at least 56 characters for second line, "
+                             "got: \n%s" % line)
+        total_nlines    = _expect_int(line[:14])
+        pointer_nlines  = _expect_int(line[14:28])
+        indices_nlines  = _expect_int(line[28:42])
+        values_nlines   = _expect_int(line[42:56])
+
+        rhs_nlines = line[56:72].strip()
+        if rhs_nlines == '':
+            rhs_nlines = 0
+        else:
+            rhs_nlines = _expect_int(rhs_nlines)
+        if not rhs_nlines == 0:
+            raise ValueError("Only files without right hand side supported for " \
+                             "now.")
+
+        # Third line
+        line = fid.readline()
+        if not len(line) >= 70:
+            raise ValueError("Expected at least 72 character for third line, got:\n"
+                             "%s" % line)
+
+        mxtype_s = line[:3].upper()
+        if not len(mxtype_s) == 3:
+            raise ValueError("mxtype expected to be 3 characters long")
+
+        mxtype = HBMatrixType.from_fortran(mxtype_s)
+        if not mxtype.value_type in ["real", "integer"]:
+            raise ValueError("Only real or integer matrices supported for now")
+        if not mxtype.structure == "unsymmetric":
+            raise ValueError("Only unsymmetric matrices supported for now")
+        if not mxtype.storage == "assembled":
+            raise ValueError("Only assembled matrices supported for now")
+
+        if not line[3:14] == " " * 11:
+            raise ValueError("Malformed data for third line: %s" % line)
+
+        nrows = _expect_int(line[14:28])
+        ncols = _expect_int(line[28:42])
+        nnon_zeros = _expect_int(line[42:56])
+        nelementals = _expect_int(line[56:70])
+        if not nelementals == 0:
+            raise ValueError("Unexpected value %d for nltvl (last entry of line 3)"
+                             % nelementals)
+
+        # Fourth line
+        line = fid.readline()
+
+        ct = line.split()
+        if not len(ct) == 3:
+            raise ValueError("Expected 3 formats, got %s" % ct)
+
+        return cls(title, key,
+                   total_nlines, pointer_nlines, indices_nlines, values_nlines,
+                   mxtype, nrows, ncols, nnon_zeros,
+                   ct[0], ct[1], ct[2],
+                   rhs_nlines, nelementals)
+
+    def __init__(self, title, key,
+            total_nlines, pointer_nlines, indices_nlines, values_nlines,
+            mxtype, nrows, ncols, nnon_zeros,
+            pointer_format_str, indices_format_str, values_format_str,
+            right_hand_sides_nlines=0, nelementals=0):
+        """Do not use this directly, but the class ctrs (from_* functions)."""
         self.title = title
         self.key = key
+        if title is None:
+            title = "No Title"
+        if len(title) > 72:
+            raise ValueError("title cannot be > 72 characters")
+
+        if key is None:
+            key = "|No Key"
+        if len(key) > 8:
+            raise ValueError("key cannot be > 8 characters")
+
+
+        self.total_nlines = total_nlines
+        self.pointer_nlines = pointer_nlines
+        self.indices_nlines = indices_nlines
+        self.values_nlines = values_nlines
+
+        parser = FortranFormatParser()
+        pointer_format = parser.parse(pointer_format_str)
+        if not isinstance(pointer_format, IntFormat):
+            raise ValueError("Expected int format for pointer format, got %s"
+                             % pointer_format)
+
+        indices_format = parser.parse(indices_format_str)
+        if not isinstance(indices_format, IntFormat):
+            raise ValueError("Expected int format for indices format, got %s" %
+                             indices_format)
+
+        values_format = parser.parse(values_format_str)
+        if isinstance(values_format, ExpFormat):
+            if not mxtype.value_type in ["real", "complex"]:
+                raise ValueError("Inconsistency between matrix type %s and " \
+                                 "value type %s" % (mxtype, values_format))
+            values_dtype = np.float64
+        elif isinstance(val_fmt, IntFormat):
+            if not mxtype.value_type in ["integer"]:
+                raise ValueError("Inconsistency between matrix type %s and " \
+                                 "value type %s" % (mxtype, values_format))
+            # XXX: fortran int -> dtype association ?
+            values_dtype = np.int32
+        else:
+            raise ValueError("Unsupported format for values %s" % ct[2])
+        self.pointer_dtype = np.int32
+        self.indices_dtype = np.int32
+        self.values_dtype = values_dtype
 
         self.pointer_nlines = pointer_nlines
-        self.pointer_nitems = pointer_nitems
-        self.pointer_width = pointer_width
+        self.pointer_nbytes_full = _nbytes_full(pointer_format, pointer_nlines)
 
         self.indices_nlines = indices_nlines
-        self.indices_nitems = indices_nitems
-        self.indices_width = indices_width
+        self.indices_nbytes_full = _nbytes_full(indices_format, indices_nlines)
 
         self.values_nlines = values_nlines
-        self.values_nitems = values_nitems
-        self.values_width = values_width
+        self.values_nbytes_full = _nbytes_full(values_format, values_nlines)
 
-        self.n_rows = n_rows
-        self.n_cols = n_cols
-        self.n_nzeros = n_nzeros
+        self.nrows = nrows
+        self.ncols = ncols
+        self.nnon_zeros = nnon_zeros
+        self.nelementals = nelementals
 
 def _expect_int(value, msg=None):
     try:
@@ -68,200 +189,154 @@ def _expect_int(value, msg=None):
             msg = "Expected an int, got %s"
         raise ValueError(msg % value)
 
-def fortran_format(n, prec=None):
-    if n.dtype in (np.int, np.int32):
-        if prec is not None:
-            raise ValueError(
-                    "prec argument does not make sense for integer value")
-        ndigits = np.floor(np.log10(n)) + 1
-        nvals = 80 / (ndigits + 1)
-        return "(%dI%d)" % (nvals, ndigits + 1)
-    elif n.dtype == np.float:
-        # Only exponential format for now
-        if prec is None:
-            prec = 8
-        # Number of digits in the exponent
-        exp = np.floor(np.log10(n)) + 1
-        ndigits = np.max([2, number_digits(exp)])
+def _read_hb_data(content, header):
+    # XXX: look at a way to reduce memory here (big string creation)
+    ptr_string =  "".join([content.read(header.pointer_nbytes_full),
+                           content.readline()])
+    ptr = np.fromstring(ptr_string,
+            dtype=np.int, sep=' ')
 
-        # len of one number: sign + 0 + "." +
-        # number of digit for fractional part + 'E' + sign of exponent +
-        # len of exponent
-        nval_sz = 1 + 1 + 1 + prec + 1 + 1 + ndigits
-        nvals = 80 /(nval_sz + 1)
-        return "(%dE%d.%d)" % (nvals, nval_sz + 1, prec)
-    else:
-        raise ValueError("unsupported type %s" % n.dtype)
+    ind_string = "".join([content.read(header.indices_nbytes_full),
+                       content.readline()])
+    ind = np.fromstring(ind_string,
+            dtype=np.int, sep=' ')
 
-def number_digits(n):
-    return np.floor(np.log10(np.abs(n))) + 1
+    val_string = "".join([content.read(header.values_nbytes_full),
+                          content.readline()])
+    val = np.fromstring(val_string,
+            dtype=header.values_dtype, sep=' ')
 
-def _read_header(content):
-    """Read HB-format header.
+    try:
+        return csc_matrix((val, ind-1, ptr-1),
+                          shape=(header.nrows, header.ncols))
+    except ValueError, e:
+        raise e
 
-    Parameters
-    ----------
-    content: file-like
-    """
+class HBMatrixType(object):
+    """Class to hold the matrix type."""
+    # q2f* translates qualified names to fortran character
+    _q2f_type = {
+        "real": "R",
+        "complex": "C",
+        "pattern": "P",
+        "integer": "I",
+    }
+    _q2f_structure = {
+            "symmetric": "S",
+            "unsymmetric": "U",
+            "hermitian": "H",
+            "skewsymmetric": "Z",
+            "rectangular": "R"
+    }
+    _q2f_storage = {
+        "assembled": "A",
+        "elemental": "E",
+    }
 
-    # First line
-    line = content.readline()
-    if not len(line) > 72:
-        raise ValueError("Expected at least 72 characters for first line, "
-                         "got: \n%s" % line)
-    title = line[:72]
-    key = line[72:]
+    _f2q_type = dict([(j, i) for i, j in _q2f_type.items()])
+    _f2q_structure = dict([(j, i) for i, j in _q2f_structure.items()])
+    _f2q_storage = dict([(j, i) for i, j in _q2f_storage.items()])
 
-    # Second line
+    @classmethod
+    def from_fortran(cls, fmt):
+        if not len(fmt) == 3:
+            raise ValueError("Fortran format for matrix type should be 3 " \
+                             "characters long")
+        try:
+            value_type = cls._f2q_type[fmt[0]]
+            structure = cls._f2q_structure[fmt[1]]
+            storage = cls._f2q_storage[fmt[2]]
+            return cls(value_type, structure, storage)
+        except KeyError:
+            raise ValueError("Unrecognized format %s" % fmt)
 
-    # totcrd|ptrcrd|indcrd|valcrd|rhscrd
-    # totcrd: I14
-    #   total number of lines
-    # ptrcrd: I14
-    #   number of lines for pointers
-    # indcrd: I14
-    #   number of lines for row or variables indices
-    # valcrd: I14
-    #   number of lines for values
-    # rhscrd: I14
-    #   number of lines for right hand side, starting guess and solutions (0 by
-    #   default)
-    line = content.readline()
-    if not len(line.rstrip()) >= 56:
-        raise ValueError("Expected at least 56 characters for second line, "
-                         "got: \n%s" % line)
-    tot_nlines = _expect_int(line[:14])
-    ptr_nlines = _expect_int(line[14:28])
-    ind_nlines = _expect_int(line[28:42])
-    val_nlines = _expect_int(line[42:56])
+    def __init__(self, value_type, structure, storage="assembled"):
+        self.value_type = value_type
+        self.structure = structure
+        self.storage = storage
 
-    rhs_nlines = line[56:72].strip()
-    if rhs_nlines == '':
-        rhs_nlines = 0
-    else:
-        rhs_nlines = _expect_int(rhs_nlines)
+        if not value_type in self._q2f_type.keys():
+            raise ValueError("Unrecognized type %s" % value_type)
+        if not structure in self._q2f_structure.keys():
+            raise ValueError("Unrecognized structure %s" % structure)
+        if not storage in self._q2f_storage.keys():
+            raise ValueError("Unrecognized storage %s" % storage)
 
-    # Third line
-    line = content.readline()
-    if not len(line) >= 70:
-        raise ValueError("Expected at least 72 character for third line, got:\n"
-                         "%s" % line)
+    def fortran_fmt(self):
+        return self._q2f_type[self.value_type] + \
+               self._q2f_structure[self.structure] + \
+               self._q2f_storage[self.storage]
 
-    mxtype = line[:3].upper()
-    if not line[3:14] == " " * 11:
-        raise ValueError("Malformed data for third line: %s" % line)
-    if not len(mxtype) == 3:
-        raise ValueError("mxtype expected to be 3 characters long")
-    if not mxtype[0] == "R":
-        raise ValueError("type %s not supported" % mxtype[0])
+    def __repr__(self):
+        return "HBMatrixType(%s, %s, %s)" % \
+               (self.value_type, self.structure, self.storage)
 
-    n_rows = _expect_int(line[14:28])
-    n_cols = _expect_int(line[28:42])
-    n_zeros = _expect_int(line[42:56])
-    n_elementals = _expect_int(line[56:70])
-    if not n_elementals == 0:
-        raise ValueError("Unexpected value %d for nltvl (last entry of line 3)"
-                         % n_elementals)
+class HBFile(object):
+    def __init__(self, file, hb_info=None):
+        """Create a HBFile instance.
 
-    # Fourth line
-    line = content.readline()
+        Parameters
+        ----------
+        file: file-object
+            StringIO work as well
+        hb_info: HBHeader
+            Should be given as an argument for writing, in which case the file
+            should be writable.
+        """
+        self._fid = file
+        if hb_info is None:
+            self._hb_info = HBHeader.from_file(file)
+        else:
+            if not file.writable():
+                raise IOError("file %s is not writable, and hb_info "
+                              "was given." % file)
 
-    parser = FortranFormatParser()
-    ct = line.split()
-    if not len(ct) == 3:
-        raise ValueError("Expected 3 formats, got %s" % ct)
+    @property
+    def title(self):
+        return self._hb_info.title
 
-    ptr_fmt = parser.parse(ct[0])
-    if not isinstance(ptr_fmt, IntFormat):
-        raise ValueError("Expected int format for pointer format, got %s"
-                         % ct[0])
+    @property
+    def key(self):
+        return self._hb_info.key
 
-    ind_fmt = parser.parse(ct[1])
-    if not isinstance(ind_fmt, IntFormat):
-        raise ValueError("Expected int format for indices format, got %s" %
-                         ct[1])
+    @property
+    def type(self):
+        return self._hb_info.mxtype.value_type
 
-    val_fmt = parser.parse(ct[2])
-    if not isinstance(val_fmt, ExpFormat):
-        raise ValueError("Expected exponential format for values, got %s"
-                         % ct[2])
-    header_info = HarwellBoeingHeader( title,
-                        ptr_nlines, ptr_fmt.repeat, ptr_fmt.width,
-                        ind_nlines, ind_fmt.repeat, ind_fmt.width,
-                        val_nlines, val_fmt.repeat, val_fmt.width,
-                        n_rows, n_cols, n_zeros,
-                        key)
-    return header_info
+    @property
+    def structure(self):
+        return self._hb_info.mxtype.structure
+
+    @property
+    def storage(self):
+        return self._hb_info.mxtype.storage
+
+    def read_matrix(self):
+        return _read_hb_data(self._fid, self._hb_info)
 
 def read_hb(file):
-    """Read a file in Harwell-Boeing format.
+    """Read HB-format file.
 
     Parameters
     ----------
     file: str-like or file-like
         if a string-like object, file is the name of the file to read. If a
         file-like object, the data are read from it.
-
-    Returns
-    -------
-    m: sparse-matrix
-        read sparse matrix
     """
+    def _get_matrix(fid):
+        hb = HBFile(fid)
+        return hb.read_matrix()
+
     if isinstance(file, basestring):
         fid = open(file)
-    else:
-        fid = file
-
-    try:
-        return _read_hb(fid)
-    finally:
-        if isinstance(file, basestring):
+        try:
+            return _get_matrix(fid)
+        finally:
             fid.close()
+    else:
+        return _get_matrix(file)
 
-def _read_hb(content):
-    """Read HB-format file.
-
-    Parameters
-    ----------
-    content: file-like
-
-    Returns
-    -------
-    m: sparse-matrix
-    """
-    header = HarwellBoeingHeader.from_file(content)
-
-    # Number of bytes per data section, ignoring the last line, which
-    # potentially contains few items than every other line
-    ptr_nbytes = (header.pointer_nitems * header.pointer_width + 1) \
-                 * (header.pointer_nlines - 1)
-    ind_nbytes = (header.indices_nitems * header.indices_width + 1) \
-                 * (header.indices_nlines - 1)
-    val_nbytes = (header.values_nitems * header.values_width + 1) \
-                 * (header.values_nlines - 1)
-
-    ptr_string =  "".join([content.read(ptr_nbytes),
-                           content.readline()])
-    ptr = np.fromstring(ptr_string,
-            dtype=np.int, sep=' ')
-
-    ind_string = "".join([content.read(ind_nbytes),
-                       content.readline()])
-    ind = np.fromstring(ind_string,
-            dtype=np.int, sep=' ')
-
-    val_string = "".join([content.read(val_nbytes),
-                          content.readline()])
-    val = np.fromstring(val_string,
-            dtype=np.float, sep=' ')
-
-    try:
-        return csc_matrix((val, ind-1, ptr-1),
-                          shape=(header.n_rows, header.n_cols))
-    except ValueError, e:
-        raise e
-
-def write_hb(file, m, title=None, key=None, fmt=None):
+def write_hb(file, m, hb_info):
     """Write HB-format file.
 
     Parameters
@@ -271,140 +346,18 @@ def write_hb(file, m, title=None, key=None, fmt=None):
         file-like object, the data are read from it.
     m: sparse-matrix
         the sparse matrix to write
-    title: str
-        title put in the header
-    key: str
-        Key put in the header
+    hb_info: HBInfo
+        contains the meta-data for write_hb
     """
-    # TODO: fix and document the format argument
-    # fmt: dict
-    #     dict containing the format for each pointer, indices and values
-    #     arrays.
+    def _set_matrix(fid):
+        hb = HBFile(fid, hb_info)
+        return hb.write_matrix(m)
+
     if isinstance(file, basestring):
         fid = open(file, "w")
-    else:
-        fid = file
-
-    try:
-        _write_hb(fid, m, title, key, mxtype="RUA", fmt=fmt)
-    finally:
-        if isinstance(file, basestring):
+        try:
+            return _set_matrix(fid)
+        finally:
             fid.close()
-
-def _parse_fmt_argument(m, fmt, ptr, ind, val):
-    # Compute formats
-    if fmt is None:
-        fmt = {}
-    for k in ["ptr", "ind", "val"]:
-        if not fmt.has_key(k):
-            fmt[k] = "default"
-
-    if fmt["ptr"] == "default":
-        ptr_max = np.max(ptr)
-        ptr_fmt = fortran_format(ptr_max)
     else:
-        raise ValueError("Pointer format %s not supported" % fmt["ptr"])
-
-    if fmt["ind"] == "default":
-        ind_max = np.max(ind)
-        ind_fmt = fortran_format(ind_max)
-    else:
-        raise ValueError("Index format %s not supported" % fmt["ind"])
-
-    if fmt["val"] == "default":
-        if m.dtype in [np.float32, np.float64]:
-            prec = np.finfo(m.dtype).precision
-        else:
-            raise ValueError("dtype %s not supported for values" % m.dtype)
-    else:
-        prec = fmt["val"]["prec"]
-    val_max = np.max(np.abs(val))
-    val_fmt = fortran_format(val_max, prec=prec)
-
-    return ptr_fmt, ind_fmt, val_fmt
-
-def _write_hb(fid, m, title=None, key=None, mxtype="RUA", fmt=None):
-    if title is None:
-        title = "No Title"
-    if len(title) > 72:
-        raise ValueError("title cannot be > 72 characters")
-
-    if key is None:
-        key = "|No Key"
-    if len(key) > 8:
-        raise ValueError("key cannot be > 8 characters")
-
-    header = [title.ljust(72) + key.ljust(8)]
-    assert len(header[0]) == 80
-
-    c = csc_matrix(m)
-    val = c.data
-
-    # At this point, we use fortran convention (one-indexing)
-    ind = c.indices + 1
-    ptr = c.indptr + 1
-
-    ptr_fmt, ind_fmt, val_fmt = _parse_fmt_argument(m, fmt, ptr, ind, val)
-
-    parser = FortranFormatParser()
-    def _nrepeat(fmt):
-        tp = parser.parse(fmt)
-        return tp.repeat
-
-    # *_n: number of items per (full) line
-    ptr_n = _nrepeat(ptr_fmt)
-    ind_n = _nrepeat(ind_fmt)
-    val_n = _nrepeat(val_fmt)
-
-    def _nlines(size, n):
-        nlines = size / n
-        if nlines * n != size:
-            nlines += 1
-        return nlines
-
-    ptr_nlines = _nlines(ptr.size, ptr_n)
-    ind_nlines = _nlines(ind.size, ind_n)
-    val_nlines = _nlines(val.size, val_n)
-
-    tot_nlines = ptr_nlines + ind_nlines + val_nlines
-
-    mxtype = mxtype.upper()
-    if np.iscomplexobj(val) and not mxtype[0] == "C":
-        raise ValueError("Complex matrix, but given type is %s" % mxtype[0])
-    elif not mxtype[0] in ["C", "R", "P"]:
-        raise ValueError("value type %s not understood" % mxtype[0])
-
-    if not mxtype[1] in ["U", "S", "H", "Z", "R"]:
-        raise ValueError("Matrix type %s not understood" % mxtype[1])
-    if not mxtype[2] in ["A", "E"]:
-        raise ValueError("Matrix format %s not understood" % mxtype[2])
-
-    header.append("%14d%14d%14d%14d" % 
-                  (tot_nlines, ptr_nlines, ind_nlines, val_nlines))
-    header.append("%14s%14d%14d%14d%14d" % 
-                  (mxtype.ljust(14), m.shape[0],
-                   m.shape[1], val.size, 0))
-    header.append("%16s%16s%20s" %
-                  (ptr_fmt.ljust(16), ind_fmt.ljust(16),
-                   val_fmt.ljust(20)))
-
-    def write_array(f, ar, nlines, n, ffmt):
-        # ar_nlines is the number of full lines, n is the number of items per
-        # line, ffmt the fortran format
-        pyfmt = parser.to_python(ffmt)
-        pyfmt_full = pyfmt * n
-
-        # for each array to write, we first write the full lines, and special
-        # case for partial line
-        full = ar[:(nlines - 1) * n]
-        for row in full.reshape((nlines-1, n)):
-            f.write(pyfmt_full % tuple(row) + "\n")
-        nremain = ar.size - full.size
-        if nremain > 0:
-            f.write((pyfmt * nremain) % tuple(ar[ar.size - nremain:]) + "\n")
-
-    fid.write("\n".join(header))
-    fid.write("\n")
-    write_array(fid, ptr, ptr_nlines, ptr_n, ptr_fmt)
-    write_array(fid, ind, ind_nlines, ind_n, ind_fmt)
-    write_array(fid, val, val_nlines, val_n, val_fmt)
+        return _set_matrix(file)
