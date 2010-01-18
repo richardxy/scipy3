@@ -1,19 +1,9 @@
 #!/usr/bin/env python
 
-from os.path import join
-import sys
-
 def configuration(parent_package='',top_path=None):
-    import numpy
     from numpy.distutils.misc_util import Configuration
-
-    config = Configuration('sparse',parent_package,top_path,
-                           setup_name = 'setupscons.py')
-
+    config = Configuration('io',parent_package,top_path)
     config.add_data_dir('tests')
-    config.add_subpackage('linalg')
-    config.add_subpackage('sparsetools')
-    config.add_subpackage('io')
 
     return config
 
