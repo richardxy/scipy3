@@ -25,7 +25,8 @@ from scipy.sparse.io._fortran_format_parser \
     import\
         FortranFormatParser, IntFormat, ExpFormat
 
-__all__ = ["MalformedHeader", "read_hb", "write_hb", "HBInfo"]
+__all__ = ["MalformedHeader", "read_hb", "write_hb", "HBInfo", "HBFile",
+           "HBMatrixType"]
 
 class MalformedHeader(Exception):
     pass
