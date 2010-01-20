@@ -50,9 +50,9 @@ class IntFormat(object):
         Note
         ----
         Reasonable should be understood as the minimal string length necessary
-        without losing precision. For example, format_int(1) will return IntFormat
-        of width 3, so that any -1, 0 and 1 may be represented as 2-character
-        strings without loss of information."""
+        without losing precision. For example, IntFormat.from_number(1) will
+        return an IntFormat instance of width 2, so that any 0 and 1 may be
+        represented as 1-character strings without loss of information."""
         width = number_digits(n) + 1
         if n < 0:
             width += 1
@@ -107,10 +107,8 @@ class ExpFormat(object):
 
         Note
         ----
-        Reasonable should be understood as the minimal string length necessary to
-        avoid losing precision. For example, format_int(1) will return IntFormat of
-        width 2, so that any -1, 0 and 1 may be represented as 2-character strings
-        without loss of information."""
+        Reasonable should be understood as the minimal string length necessary
+        to avoid losing precision."""
         # len of one number in exp format: sign + 1|0 + "." +
         # number of digit for fractional part + 'E' + sign of exponent +
         # len of exponent
