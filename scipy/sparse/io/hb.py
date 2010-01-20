@@ -41,6 +41,25 @@ def _nbytes_full(fmt, nlines):
 class HBInfo(object):
     @classmethod
     def from_data(cls, m, title="Default title", key="0", mxtype=None, fmt=None):
+        """Create a HBInfo instance from an existing sparse matrix.
+
+        Parameters
+        ----------
+        m: sparse matrix
+            the HBInfo instance will derive its parameters from m
+        title: str
+            Title to put in the HB header
+        key: str
+            Key
+        mxtype: HBMatrixType
+            type of the input matrix
+        fmt: dict
+            not implemented
+
+        Returns
+        -------
+        hb_info: HBInfo instance
+        """
         pointer = m.indptr
         indices = m.indices
         values = m.data
@@ -88,6 +107,18 @@ class HBInfo(object):
 
     @classmethod
     def from_file(cls, fid):
+        """Create a HBInfo instance from a file object containg a matrix in the
+        HB format.
+
+        Parameters
+        ----------
+        fid: file-like matrix
+            File or file-like object containing a matrix in the HB format.
+
+        Returns
+        -------
+        hb_info: HBInfo instance
+        """
         # First line
         line = fid.readline().strip("\n")
         if not len(line) > 72:
@@ -233,6 +264,7 @@ class HBInfo(object):
         self.mxtype = mxtype
 
     def dump(self):
+        """Gives the header corresponding to this instance as a string."""
         header = [self.title.ljust(72) + self.key.ljust(8)]
 
         header.append("%14d%14d%14d%14d" %
