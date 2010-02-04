@@ -329,11 +329,11 @@ def eigh(a, b=None, lower=True, eigvals_only=False, overwrite_a=False,
     if b1 is None:
         (evr,) = get_lapack_funcs((pfx+'evr',), (a1,))
         if eigvals is None:
-            w, v, info = evr(a1, uplo=uplo, jobz=_job, range="A", il=1,
+            k, w, v, info = evr(a1, uplo=uplo, jobz=_job, range="A", il=1,
                              iu=a1.shape[0], overwrite_a=overwrite_a)
         else:
             (lo, hi)= eigvals
-            w_tot, v, info = evr(a1, uplo=uplo, jobz=_job, range="I",
+            k, w_tot, v, info = evr(a1, uplo=uplo, jobz=_job, range="I",
                                  il=lo, iu=hi, overwrite_a=overwrite_a)
             w = w_tot[0:hi-lo+1]
 
