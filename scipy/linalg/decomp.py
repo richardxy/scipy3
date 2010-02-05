@@ -13,7 +13,7 @@
 __all__ = ['eig','eigh','eig_banded','eigvals','eigvalsh', 'eigvals_banded',
            'lu','svd','svdvals','diagsvd','cholesky','qr','qr_old','rq',
            'schur','rsf2csf','lu_factor','cho_factor','cho_solve','orth',
-           'hessenberg']
+           'hessenberg', 'eigs']
 
 from basic import LinAlgError
 import basic
@@ -1597,3 +1597,133 @@ def hessenberg(a,calc_q=0,overwrite_a=0):
     if q is None:
         q = diag(ones(n,dtype=typecode))
     return hq,q
+
+def _issym(a):
+    # Assumes a has only finite entries and is square
+    return numpy.all(a==a.T)
+
+def eigs(a, k, mode=None):
+    """Compute a subset of the spectrum of a symmetric operator.
+
+    Parameters
+    ----------
+    a : array, shape (M, M)
+        A real matrix whose eigenvalues and eigenvectors will be computed.
+    k : int or (low, high) pair
+        If an int, request the k-largest eigenvalues and associated
+        eigenvectors. If k is negative, request the k-smallest eigenvalues.
+        If k is a sequence, it must contains exactly two items, low and high.
+        Low and high interpretation depends on the mode.
+    mode : {None, "index", "range"}
+        If None, k must be an int.
+        If index, k must be a pair, and defines the index range of eigenvalues
+        to compute.
+        If range, k must be a pair, and defines the range of eigenvalues to
+        compute.
+
+    Returns
+    -------
+    w : double, shape (N,)
+        The N computed eigenvalues.
+    z : double, shape (M, N)
+        The N computed eigenvectors (as column vectors).
+
+    Notes
+    -----
+    If you need only a few eigenvalues, this may be (much) more efficient than
+    eigh for large matrices, where large depends on your exact machine, LAPACK
+    implementation and number of requested eigenvalues. eigs is approximately
+    O(k * M^2) for k found eigenvalues
+
+    Example
+    -------
+    >>> from scipy.linalg import eigs
+    >>> x = np.random.randn(500, 500)
+    >>> y = np.dot(x.T, x)
+    >>> # Find the 10 biggest eigenvalues
+    >>> w = eigs(x, 10)[0]
+    >>> # Find the 10 smalles eigenvalues
+    >>> w = eigs(x, -10)[0]
+    >>> # Find the 20th up to the 30th biggest eigenvalues, 30th excluded
+    >>> w = eigs(x, [20, 30], mode="index")[0]
+    >>> # Find all eigen values between 2 and 3
+    >>> w = eigs(x, [2, 3], mode="range")[0]
+    """
+    a = numpy.atleast_2d(a)
+    d, m = a.shape[:2]
+    if not d == m or a.ndim > 2:
+        raise ValueError("input array must be a square matrix")
+
+    if not numpy.all(numpy.isfinite(a)):
+        raise ValueError("Input should not contain any NaN or +/-Inf")
+
+    if not _issym(a):
+        raise NotImplementedError("Only symmetric input supported ATM: you "
+                         "may want to look at the ARPACK module in "
+                         "scipy.sparse.linal.eigen for non-symmetric "
+                         "matrices.")
+    if numpy.iscomplexobj(a):
+        raise NotImplementedError("Only real matrices supported for now.")
+
+    # XXX: revert is always True to fix with matlab convention, but one could
+    # as well just use the LAPACK convention (always display from smallest to
+    # biggest)
+    revert = True
+
+    try:
+        if not len(k) == 2:
+            raise ValueError("The range should be in the form [min, max] " \
+                             "(was %r)" % seq)
+        low, high = k
+        if mode is None:
+            raise ValueError("You should set an explicit mode when giving "
+                             "a sequence for k argument")
+        if not low < high:
+            raise ValueError("k must be of the form [low, high] where "
+                             "low < high (given k was %r)" % k)
+        if mode == "index":
+            low, high = high, low
+            low = d - low
+            high = d - high - 1
+    except TypeError:
+        # k is not a sequence
+        if mode is not None:
+            raise ValueError("k should be a length-2 sequence when mode is %r" 
+                             % mode)
+        if k < -d or k > d:
+            raise ValueError("Request %d eigenvalues, but dimension of array "
+                             "is %d" % (abs(k), d))
+        if k == 0:
+            raise ValueError("You cannot request %d eigen values/eigenvectors "
+                             "!" % k)
+        mode = "index"
+        if k < 0:
+            # Ask for k smallest eigen values
+            low = 0
+            high = -k-1
+        else:
+            # Ask for k largest eigen values
+            low = d-k
+            high = d-1
+            revert = True
+
+    syevr = get_lapack_funcs(('syevr',), (a,))[0]
+    if mode == "index":
+        if low < 0 or high > d:
+            raise ValueError("Requested eigenvalues in the range [%s, %d],"
+                             "should be included in [%d, %d]" %
+                             (low, high, 0, d))
+        extend, w, z, info = syevr(a, range="I", il=low+1, iu=high+1)
+    elif mode == "range":
+        extend, w, z, info = syevr(a, range="V", vl=low, vu=high)
+    else:
+        raise ValueError("mode %s not recognized" % mode)
+
+    if info != 0:
+        raise ValueError("Error while computing eigen-values (info is %d)"
+                         % info)
+    else:
+        if revert:
+            return w[:extend][::-1], z[:, :extend][:, ::-1]
+        else:
+            return w[:extend], z[:, :extend]

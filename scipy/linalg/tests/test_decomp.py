@@ -19,7 +19,7 @@ from numpy.testing import *
 
 from scipy.linalg import eig,eigvals,lu,svd,svdvals,cholesky,qr, \
      schur,rsf2csf, lu_solve,lu_factor,solve,diagsvd,hessenberg,rq, \
-     eig_banded, eigvals_banded, eigh
+     eig_banded, eigvals_banded, eigh, eigs, norm
 from scipy.linalg.flapack import dgbtrf, dgbtrs, zgbtrf, zgbtrs, \
      dsbev, dsbevd, dsbevx, zhbevd, zhbevx
 
@@ -1138,6 +1138,66 @@ def test_lapack_misaligned():
             (schur,(S,),dict(overwrite_a=True)), # crash
             ]:
         yield check_lapack_misaligned, func, args, kwargs
+
+class EigsTest(TestCase):
+    def __init__(self, *a, **kw):
+        TestCase.__init__(self, *a, **kw)
+
+        x = np.random.randn(10, 10)
+        self.x = np.dot(x.T, x)
+        evals, evects = eigh(self.x, eigvals_only=False)
+        ind = evals.argsort()[::-1]
+        self.evals = evals[ind]
+
+        evects = evects[:, ind]
+        for i in range(len(ind)):
+            evects[:, i] /= norm(evects[:, i])
+        self.evects = evects
+
+    def _check_evects(self, evals, evects):
+        for i in range(len(evals)):
+            assert_almost_equal(np.dot(self.x, evects[:, i]),
+                    evals[i] * evects[:, i])
+
+    def test_simple(self):
+        evals, evects = eigs(self.x, 3)
+        assert_almost_equal(evals, self.evals[:3])
+        self._check_evects(evals, evects)
+
+        evals, evects = eigs(self.x, 10)
+        assert_almost_equal(evals, self.evals)
+        self._check_evects(evals, evects)
+
+        evals, evects = eigs(self.x, -3)
+        assert_almost_equal(evals, self.evals[-3:])
+        self._check_evects(evals, evects)
+
+    def test_index(self):
+        evals, evects = eigs(self.x, [0, 3], mode="index")
+        assert_almost_equal(evals, self.evals[:3])
+        self._check_evects(evals, evects)
+
+        evals, evects = eigs(self.x, [7, 10], mode="index")
+        assert_almost_equal(evals, self.evals[-3:])
+        self._check_evects(evals, evects)
+
+        evals, evects = eigs(self.x, [2, 3], mode="index")
+        assert_almost_equal(evals, self.evals[2:3])
+        self._check_evects(evals, evects)
+
+        evals, evects = eigs(self.x, [8, 9], mode="index")
+        assert_almost_equal(evals, self.evals[8:9])
+        self._check_evects(evals, evects)
+
+        evals, evects = eigs(self.x, [0, 10], mode="index")
+        assert_almost_equal(evals, self.evals)
+        self._check_evects(evals, evects)
+
+    def test_range(self):
+        evals, evects = eigs(self.x, [0, 1], mode="range")
+        assert_equal(np.all(evals > 0) and np.all(evals < 1), True)
+        self._check_evects(evals, evects)
+
 # not properly tested
 # cholesky, rsf2csf, lu_solve, solve, eig_banded, eigvals_banded, eigh, diagsvd
 
