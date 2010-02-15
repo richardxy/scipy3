@@ -86,7 +86,14 @@ class HBInfo(object):
         if mxtype is None:
             if not np.isrealobj(values):
                 raise ValueError("Complex values not supported yet")
-            mxtype = HBMatrixType("real", "unsymmetric", "assembled")
+            if values.dtype.kind in np.typecodes["AllInteger"]:
+                tp = "integer"
+            elif values.dtype.kind in np.typecodes["AllFloat"]:
+                tp = "real"
+            else:
+                raise NotImplementedError("type %s for values not implemented" \
+                                          % values.dtype)
+            mxtype = HBMatrixType(tp, "unsymmetric", "assembled")
         else:
             raise ValueError("mxtype argument not handled yet.")
 
