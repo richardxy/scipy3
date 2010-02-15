@@ -234,7 +234,7 @@ class HBInfo(object):
                 raise ValueError("Inconsistency between matrix type %s and " \
                                  "value type %s" % (mxtype, values_format))
             values_dtype = np.float64
-        elif isinstance(val_fmt, IntFormat):
+        elif isinstance(values_format, IntFormat):
             if not mxtype.value_type in ["integer"]:
                 raise ValueError("Inconsistency between matrix type %s and " \
                                  "value type %s" % (mxtype, values_format))
