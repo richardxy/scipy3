@@ -78,6 +78,8 @@ class HBInfo(object):
                 values_fmt = ExpFormat.from_number(-np.max(np.abs(values)))
             elif values.dtype.kind in np.typecodes["AllInteger"]:
                 values_fmt = IntFormat.from_number(-np.max(np.abs(values)))
+            else:
+                raise NotImplementedError("type %s not implemented yet" % values.dtype.kind)
         else:
             raise NotImplementedError("fmt argument not supported yet.")
 
