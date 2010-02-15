@@ -246,7 +246,7 @@ class HBInfo(object):
                 raise ValueError("Inconsistency between matrix type %s and " \
                                  "value type %s" % (mxtype, values_format))
             # XXX: fortran int -> dtype association ?
-            values_dtype = np.int32
+            values_dtype = np.int
         else:
             raise ValueError("Unsupported format for values %s" % ct[2])
 
